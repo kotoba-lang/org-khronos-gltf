@@ -1,4 +1,8 @@
-# kotoba-lang/gltf
+# kotoba-lang/org-khronos-gltf
+
+(renamed from `kotoba-lang/gltf` 2026-07-05 — reverse-domain naming for an
+external-spec-name repo, khronos.org, same ADR-2607041500 rename precedent
+as `org-khronos-glb`/`org-openusd`/`org-materialx`.)
 
 Zero-dep portable `.cljc` — restored from the legacy `kami-engine/kami-gltf` Rust crate
 (`kotoba-lang/kami-engine`, deleted in PR #82 "Remove Rust workspace from kami-engine")
