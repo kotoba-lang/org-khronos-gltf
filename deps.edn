@@ -1,6 +1,13 @@
 {:paths ["src" "test"]
  :deps {io.github.kotoba-lang/glb {:local/root "../glb"}}
  :aliases {:test {:extra-paths ["test"]
+                  ;; kotoba-lang/mesher is a TEST-ONLY fixture generator (a
+                  ;; real, working sdf-to-mesh producer whose output shape
+                  ;; already matches this repo's LoadedMesh contract
+                  ;; verbatim) for the export->parse round-trip test
+                  ;; (ADR-0048 §3) — not a runtime dep of `gltf` itself.
                   :extra-deps {io.github.cognitect-labs/test-runner
-                               {:git/tag "v0.5.1" :git/sha "dfb30dd"}}
+                               {:git/tag "v0.5.1" :git/sha "dfb30dd"}
+                               io.github.kotoba-lang/mesher
+                               {:local/root "../mesher"}}
                   :main-opts ["-m" "cognitect.test-runner"]}}}
