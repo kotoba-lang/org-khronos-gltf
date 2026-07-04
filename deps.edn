@@ -1,5 +1,5 @@
 {:paths ["src" "test"]
- :deps {io.github.kotoba-lang/glb {:local/root "../glb"}}
+ :deps {io.github.kotoba-lang/glb {:local/root "../org-khronos-glb"}}
  :aliases {:test {:extra-paths ["test"]
                   ;; kotoba-lang/mesher is a TEST-ONLY fixture generator (a
                   ;; real, working sdf-to-mesh producer whose output shape
