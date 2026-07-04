@@ -17,28 +17,25 @@
 
   Platform divergence (f32 <-> IEEE-754 le bytes, byte-array construction) is
   isolated behind `#?(:clj ... :cljs ...)` reader conditionals; all shape/JSON
-  logic above that is pure, portable data + functions.")
+  logic above that is pure, portable data + functions.
+
+  GLB binary-container framing (12-byte header + JSON chunk + BIN chunk) is
+  delegated to `kotoba-lang/glb` (ADR-0048 §5, `com-junkawasaki/root`) —
+  extracted because the same container format was also independently
+  hand-rolled (read-only) in `kotoba-lang/vrm`'s `vrm.glb`. `u32->le-bytes`
+  / `le-bytes->u32` / `string->byte-seq` / `pad-len` / the GLB magic+version+
+  chunk-type constants below are re-exported from `glb` for call-site
+  backward compatibility (nothing here reimplements them anymore); this
+  namespace still owns everything glTF-JSON-specific (`build-gltf-json`,
+  `->json`, `compute-bounds`, mesh vertex/index byte encoding)."
+  (:require [glb]))
 
 ;; ---------------------------------------------------------------------------
-;; Little-endian byte encoding (pure integer math; portable both platforms)
+;; Little-endian byte encoding — re-exported from `glb` (see ns docstring)
 ;; ---------------------------------------------------------------------------
 
-(defn u32->le-bytes
-  "u32 -> 4 little-endian byte ints (0-255), matching Rust's `u32::to_le_bytes`."
-  [x]
-  (let [x (bit-and (long x) 0xFFFFFFFF)]
-    [(bit-and x 0xFF)
-     (bit-and (bit-shift-right x 8) 0xFF)
-     (bit-and (bit-shift-right x 16) 0xFF)
-     (bit-and (bit-shift-right x 24) 0xFF)]))
-
-(defn le-bytes->u32
-  "Inverse of `u32->le-bytes` — 4 little-endian byte ints -> u32."
-  [[b0 b1 b2 b3]]
-  (bit-or b0
-          (bit-shift-left b1 8)
-          (bit-shift-left b2 16)
-          (bit-shift-left b3 24)))
+(def u32->le-bytes glb/u32->le-bytes)
+(def le-bytes->u32 glb/le-bytes->u32)
 
 (defn f32->le-bytes
   "f32 -> 4 little-endian byte ints (0-255) of the IEEE-754 single-precision
@@ -52,11 +49,7 @@
        (.setFloat32 view 0 x true)
        [(.getUint8 view 0) (.getUint8 view 1) (.getUint8 view 2) (.getUint8 view 3)])))
 
-(defn string->byte-seq
-  "UTF-8 encode a string to a vector of byte ints (0-255)."
-  [s]
-  #?(:clj (mapv #(bit-and (int %) 0xFF) (.getBytes ^String s "UTF-8"))
-     :cljs (vec (.encode (js/TextEncoder.) s))))
+(def string->byte-seq glb/string->byte-seq)
 
 (defn bytes-seq->platform
   "Convert a seq of byte ints (0-255) to the platform's native byte buffer:
@@ -65,10 +58,7 @@
   #?(:clj (byte-array (map unchecked-byte s))
      :cljs (js/Uint8Array. (clj->js (vec s)))))
 
-(defn pad-len
-  "Number of zero-padding bytes needed to round `n` up to a 4-byte boundary."
-  [n]
-  (mod (- 4 (mod n 4)) 4))
+(def pad-len glb/pad-len)
 
 ;; ---------------------------------------------------------------------------
 ;; Minimal JSON serialization (only what the glTF JSON chunk needs)
@@ -170,19 +160,26 @@
    :buffers [{:byteLength total-buffer-len}]})
 
 ;; ---------------------------------------------------------------------------
-;; GLB (binary container) assembly
+;; GLB (binary container) assembly — delegated to kotoba-lang/glb (ADR-0048 §5)
 ;; ---------------------------------------------------------------------------
 
-(def glb-magic 0x46546C67) ;; "glTF"
-(def glb-version 2)
-(def json-chunk-type 0x4E4F534A) ;; "JSON"
-(def bin-chunk-type 0x004E4942)  ;; "BIN\0"
+(def glb-magic glb/glb-magic) ;; "glTF"
+(def glb-version glb/glb-version)
+(def json-chunk-type glb/chunk-type-json) ;; "JSON"
+(def bin-chunk-type glb/chunk-type-bin)  ;; "BIN\0"
 
 (defn export-glb-byte-seq
   "Pure, portable core: `mesh` (map with :vertices :indices :vertex-count
   :index-count) + `color` (RGBA 4-vector) -> vector of byte ints (0-255)
   forming a complete binary glTF 2.0 (.glb) file. No platform-specific types
-  involved — safe to unit test directly on any platform."
+  involved — safe to unit test directly on any platform.
+
+  glTF-JSON building (`build-gltf-json`) and mesh vertex/index byte encoding
+  stay here; the actual GLB container framing (header + chunk assembly +
+  padding) is delegated to `glb/write-glb-raw` (`kotoba-lang/glb`, the
+  canonical GLB codec, ADR-0048 §5) — the JSON bytes handed to it are already
+  fully serialized (via this namespace's own `->json`), so `glb` does no
+  re-encoding, just pure chunk framing."
   [{:keys [vertices indices vertex-count index-count] :as mesh} color]
   (let [vertex-bytes (vec (mapcat f32->le-bytes vertices))
         index-bytes (vec (mapcat u32->le-bytes indices))
@@ -199,27 +196,8 @@
                                     :min-pos min-pos
                                     :max-pos max-pos})
         json-bytes (string->byte-seq (->json json-map))
-        json-pad (pad-len (count json-bytes))
-        json-chunk-len (+ (count json-bytes) json-pad)
-        bin-pad (pad-len total-buffer-len)
-        bin-chunk-len (+ total-buffer-len bin-pad)
-        total-len (+ 12 8 json-chunk-len 8 bin-chunk-len)]
-    (vec (concat
-          ;; 12-byte header: magic + version + total length
-          (u32->le-bytes glb-magic)
-          (u32->le-bytes glb-version)
-          (u32->le-bytes total-len)
-          ;; JSON chunk
-          (u32->le-bytes json-chunk-len)
-          (u32->le-bytes json-chunk-type)
-          json-bytes
-          (repeat json-pad 0x20) ;; space-pad, matching the Rust original
-          ;; BIN chunk
-          (u32->le-bytes bin-chunk-len)
-          (u32->le-bytes bin-chunk-type)
-          vertex-bytes
-          index-bytes
-          (repeat bin-pad 0)))))
+        bin-bytes (vec (concat vertex-bytes index-bytes))]
+    (glb/write-glb-raw json-bytes bin-bytes)))
 
 (defn export-glb
   "Export `mesh` + RGBA `color` to a binary glTF 2.0 (.glb) buffer in the

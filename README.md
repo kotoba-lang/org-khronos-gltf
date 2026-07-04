@@ -26,14 +26,33 @@ this port is faithful to that (there was nothing else to port).
 - `export-glb` — wraps the above into the platform's native byte buffer (`byte[]` on
   the JVM, `js/Uint8Array` in ClojureScript)
 
+## GLB container framing (ADR-0048 §5)
+
+The actual binary GLB container assembly (12-byte header + JSON chunk + BIN chunk,
+padding, chunk-type magic numbers) used to be hand-rolled here — but the exact same
+format was *also* independently hand-rolled (read-only) in `kotoba-lang/vrm`'s
+`vrm.glb`, a real duplicated-implementation risk (ADR-0048 §5,
+`kotoba-lang/kami-engine`). `export-glb-byte-seq` now delegates that framing to
+**`kotoba-lang/glb`** (`:local/root "../glb"`, the single canonical GLB codec both
+repos depend on) via `glb/write-glb-raw` — this namespace still builds the
+glTF-JSON shape and serializes it (`build-gltf-json`/`->json`) and still owns mesh
+vertex/index byte encoding; `glb` only frames already-serialized bytes into chunks.
+`u32->le-bytes`/`le-bytes->u32`/`string->byte-seq`/`pad-len`/`glb-magic`/
+`glb-version`/`json-chunk-type`/`bin-chunk-type` are now re-exports of `glb`'s
+canonical definitions (call-site compatible, no behavior change).
+
 ## Tests
 
-`test/gltf_test.cljc` — 6 tests / 14 assertions, 0 failures:
+`test/gltf_test.cljc` — 7 tests / 17 assertions, 0 failures:
 
 - `glb-header-valid` — ported 1:1 from the original's `#[test] fn glb_header_valid`
 - `namespace-loads` — smoke test
-- plus additional coverage for the JSON chunk tag, bounds computation, byte
-  round-tripping, and JSON serialization shapes
+- `export-glb-byte-seq-migration-regression` — pins the exact byte count for a real
+  mesh fixture and independently re-parses the export via `kotoba-lang/glb`'s own
+  `parse-glb`, proving the ADR-0048 §5 migration to a shared GLB codec didn't
+  silently change output
+- plus coverage for the JSON chunk tag, bounds computation, byte round-tripping,
+  and JSON serialization shapes
 
 ## Develop
 
