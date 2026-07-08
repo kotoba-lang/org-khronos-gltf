@@ -6,7 +6,7 @@
 
 (deftest namespace-loads
   (testing "the restored CLJC namespace loads"
-    (is (some? (the-ns 'gltf)))))
+    (is (some? (find-ns 'gltf)))))
 
 ;; Ported 1:1 from kami-gltf/src/lib.rs `#[test] fn glb_header_valid`.
 (deftest glb-header-valid
