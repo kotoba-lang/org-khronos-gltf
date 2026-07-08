@@ -1,5 +1,5 @@
 {:paths ["src" "test"]
- :deps {io.github.kotoba-lang/glb {:local/root "../org-khronos-glb"}}
+ :deps {io.github.kotoba-lang/org-khronos-glb {:git/sha "87c6cced3e75616c3b9b92e3e0f6c64f228e2887"}}
  :aliases {:test {:extra-paths ["test"]
                   ;; kotoba-lang/mesher is a TEST-ONLY fixture generator (a
                   ;; real, working sdf-to-mesh producer whose output shape
@@ -9,5 +9,5 @@
                   :extra-deps {io.github.cognitect-labs/test-runner
                                {:git/tag "v0.5.1" :git/sha "dfb30dd"}
                                io.github.kotoba-lang/mesher
-                               {:local/root "../mesher"}}
+                               {:git/sha "b0946760efc82955888ced1e9c257170fb8033dd"}}
                   :main-opts ["-m" "cognitect.test-runner"]}}}
