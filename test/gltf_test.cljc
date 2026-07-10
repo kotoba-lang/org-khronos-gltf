@@ -193,3 +193,97 @@
               (str "vertex " i " normal mismatch: " src-norm " vs " (nth normals i)))
           (is (every? true? (map approx= src-uv (nth uvs i)))
               (str "vertex " i " uv mismatch: " src-uv " vs " (nth uvs i))))))))
+
+;; ---------------------------------------------------------------------------
+;; Multi-node scene graph (ADR-2607100100 M7, com-junkawasaki/root) —
+;; build-gltf-scene-json / export-glb-scene-byte-seq / export-glb-scene.
+;; ---------------------------------------------------------------------------
+
+(defn- tri-mesh
+  "One triangle, offset by `[dx dy dz]` (interleaved [pos3 norm3 uv2],
+  stride 8 floats) — a minimal but real, non-degenerate mesh for scene-graph
+  tests, same fixture shape as `real-mesh` above."
+  [dx dy dz]
+  {:vertices [(+ dx 0.0) (+ dy 0.0) (+ dz 0.0)  0.0 1.0 0.0  0.0 0.0
+              (+ dx 1.0) (+ dy 0.0) (+ dz 0.0)  0.0 1.0 0.0  1.0 0.0
+              (+ dx 0.0) (+ dy 1.0) (+ dz 0.0)  0.0 1.0 0.0  0.0 1.0]
+   :indices [0 1 2]
+   :vertex-count 3
+   :index-count 3})
+
+(deftest scene-single-node-with-mesh-matches-single-mesh-export
+  (testing "a one-root/one-mesh scene tree round-trips the same positions as export-glb-byte-seq"
+    (let [mesh (tri-mesh 0.0 0.0 0.0)
+          scene-bytes (gltf/export-glb-scene-byte-seq [{:mesh mesh}])
+          parsed (gltf/parse-gltf scene-bytes)
+          positions (-> parsed :meshes first :primitives first :positions)]
+      (is (= [[0.0 0.0 0.0] [1.0 0.0 0.0] [0.0 1.0 0.0]] positions)))))
+
+(deftest scene-pure-organizational-nodes-no-mesh
+  (testing "nodes with no :mesh are valid empty (Xform-equivalent) glTF nodes — no meshes/accessors emitted"
+    (let [scene-bytes (gltf/export-glb-scene-byte-seq
+                       [{:name "Site 1" :children [{:name "Building A"} {:name "Building B"}]}])
+          {:keys [json]} (gltf/parse-gltf scene-bytes)]
+      (is (= 3 (count (:nodes json))))
+      (is (empty? (:meshes json)))
+      (is (empty? (:accessors json)))
+      (is (empty? (:bufferViews json)))
+      ;; children-first flattening: index 0/1 = the two leaf children, index 2 = the root
+      (is (= "Site 1" (:name (nth (:nodes json) 2))))
+      (is (= [0 1] (:children (nth (:nodes json) 2)))))))
+
+(deftest scene-hierarchy-mixes-organizational-and-mesh-nodes
+  (testing "a real 2-level tree: root (no mesh) -> two mesh leaves, translations preserved"
+    (let [tree {:name "Wall Group"
+                :children [{:name "Wall 1" :translation [0.0 0.0 0.0] :mesh (tri-mesh 0.0 0.0 0.0)}
+                           {:name "Wall 2" :translation [5.0 0.0 0.0] :mesh (tri-mesh 5.0 0.0 0.0)}]}
+          scene-bytes (gltf/export-glb-scene-byte-seq [tree])
+          {:keys [json meshes]} (gltf/parse-gltf scene-bytes)
+          root (nth (:nodes json) 2)
+          wall1 (nth (:nodes json) 0)
+          wall2 (nth (:nodes json) 1)]
+      (testing "hierarchy + node metadata"
+        (is (= "Wall Group" (:name root)))
+        (is (nil? (:mesh root)))
+        (is (= [0 1] (:children root)))
+        (is (= "Wall 1" (:name wall1)))
+        (is (= [0.0 0.0 0.0] (:translation wall1)))
+        (is (= 0 (:mesh wall1)))
+        (is (= "Wall 2" (:name wall2)))
+        (is (= [5.0 0.0 0.0] (:translation wall2)))
+        (is (= 1 (:mesh wall2))))
+      (testing "each leaf's own mesh geometry decodes correctly, independently addressed"
+        (is (= [[0.0 0.0 0.0] [1.0 0.0 0.0] [0.0 1.0 0.0]]
+               (-> meshes (nth 0) :primitives first :positions)))
+        (is (= [[5.0 0.0 0.0] [6.0 0.0 0.0] [5.0 1.0 0.0]]
+               (-> meshes (nth 1) :primitives first :positions)))))))
+
+(deftest scene-multiple-root-nodes
+  (testing "multiple top-level roots all appear in :scenes[0].nodes"
+    (let [scene-bytes (gltf/export-glb-scene-byte-seq
+                       [{:name "Site 1"} {:name "Site 2"} {:name "Site 3"}])
+          {:keys [json]} (gltf/parse-gltf scene-bytes)]
+      (is (= 3 (count (:nodes (first (:scenes json))))))
+      (is (= #{"Site 1" "Site 2" "Site 3"} (set (map :name (:nodes json))))))))
+
+(deftest scene-custom-materials-indexed-per-mesh
+  (testing "a mesh's :material index selects the right entry out of a multi-material scene"
+    (let [materials [{:pbrMetallicRoughness {:baseColorFactor [1.0 0.0 0.0 1.0]}}
+                     {:pbrMetallicRoughness {:baseColorFactor [0.0 1.0 0.0 1.0]}}]
+          mesh-red (assoc (tri-mesh 0.0 0.0 0.0) :material 0)
+          mesh-green (assoc (tri-mesh 5.0 0.0 0.0) :material 1)
+          scene-bytes (gltf/export-glb-scene-byte-seq
+                       [{:mesh mesh-red} {:mesh mesh-green}]
+                       {:materials materials})
+          {:keys [json]} (gltf/parse-gltf scene-bytes)]
+      (is (= materials (:materials json)))
+      (is (= 0 (-> json :meshes (nth 0) :primitives first :material)))
+      (is (= 1 (-> json :meshes (nth 1) :primitives first :material))))))
+
+(deftest export-glb-scene-produces-valid-glb-header
+  (testing "export-glb-scene-byte-seq output is a well-formed GLB (magic/version/length)"
+    (let [scene-bytes (gltf/export-glb-scene-byte-seq [{:mesh (tri-mesh 0.0 0.0 0.0)}])
+          glb (vec scene-bytes)]
+      (is (= (subvec glb 0 4) (gltf/u32->le-bytes gltf/glb-magic)))
+      (is (= (subvec glb 4 8) (gltf/u32->le-bytes 2)))
+      (is (= (gltf/le-bytes->u32 (subvec glb 8 12)) (count glb))))))

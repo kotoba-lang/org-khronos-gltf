@@ -258,6 +258,149 @@
   (bytes-seq->platform (export-glb-byte-seq mesh color)))
 
 ;; ---------------------------------------------------------------------------
+;; Multi-node scene graph (ADR-2607100100 M7, com-junkawasaki/root). Everything
+;; above this point assembles exactly one node/one mesh/one material —
+;; `build-gltf-json` is a fixed literal shape, not a general builder.
+;; `build-gltf-scene-json`/`export-glb-scene-byte-seq` generalize it to an
+;; arbitrary node tree (organizational/transform-only nodes freely mixed with
+;; real-mesh leaf nodes, at any depth) — the shape `kami-app-amenominaka`'s
+;; USD export already gets for free from `usd.core/usda`'s variadic
+;; `[:def "Xform" name & children]` hiccup form, which glTF's JSON has no
+;; equivalent primitive for, so it has to be assembled here explicitly.
+;; ---------------------------------------------------------------------------
+
+(defn- default-materials []
+  [{:pbrMetallicRoughness {:baseColorFactor [0.62 0.60 0.66 1.0]
+                            :metallicFactor 0.0
+                            :roughnessFactor 0.65}}])
+
+(defn- layout-meshes
+  "Concatenate every mesh's [pos3 norm3 uv2]-interleaved vertex bytes + u32
+  index bytes into ONE combined buffer (glTF `:buffers` index 0 throughout —
+  same one-implicit-buffer convention `resolve-buffers` already documents),
+  emitting each mesh's own 4 accessors (POSITION/NORMAL/TEXCOORD_0/indices)
+  + 2 bufferViews (vertex/index) at the right global index/byte offset.
+  `meshes`: a seq of `{:vertices :indices :vertex-count :index-count
+  :material}` maps (`:material` an index into the scene's `:materials`,
+  defaults to 0). Returns `{:accessors :buffer-views :gltf-meshes :bin-bytes}`
+  — `gltf-meshes` is glTF JSON `:meshes` (one entry per input mesh, its
+  primitive's `:attributes`/`:indices` pointing at the right global accessor
+  indices)."
+  [meshes]
+  (reduce
+   (fn [acc {:keys [vertices indices vertex-count index-count material]}]
+     (let [vertex-bytes (vec (mapcat f32->le-bytes vertices))
+           index-bytes (vec (mapcat u32->le-bytes indices))
+           vertex-byte-len (count vertex-bytes)
+           index-byte-len (count index-bytes)
+           [min-pos max-pos] (compute-bounds vertices vertex-count)
+           buf-offset (:cursor acc)
+           bv-base (count (:buffer-views acc))
+           acc-base (count (:accessors acc))
+           pos-accessor {:bufferView bv-base :componentType 5126 :count vertex-count
+                         :type "VEC3" :byteOffset 0 :min min-pos :max max-pos}
+           normal-accessor {:bufferView bv-base :componentType 5126 :count vertex-count
+                            :type "VEC3" :byteOffset 12}
+           uv-accessor {:bufferView bv-base :componentType 5126 :count vertex-count
+                       :type "VEC2" :byteOffset 24}
+           index-accessor {:bufferView (inc bv-base) :componentType 5125
+                           :count index-count :type "SCALAR"}
+           vertex-bv {:buffer 0 :byteOffset buf-offset :byteLength vertex-byte-len
+                     :byteStride 32 :target 34962}
+           index-bv {:buffer 0 :byteOffset (+ buf-offset vertex-byte-len)
+                    :byteLength index-byte-len :target 34963}
+           gltf-mesh {:primitives [{:attributes {:POSITION acc-base :NORMAL (+ acc-base 1)
+                                                 :TEXCOORD_0 (+ acc-base 2)}
+                                    :indices (+ acc-base 3)
+                                    :material (or material 0)}]}]
+       (-> acc
+           (update :accessors into [pos-accessor normal-accessor uv-accessor index-accessor])
+           (update :buffer-views into [vertex-bv index-bv])
+           (update :gltf-meshes conj gltf-mesh)
+           (update :bin-bytes into (concat vertex-bytes index-bytes))
+           (assoc :cursor (+ buf-offset vertex-byte-len index-byte-len)))))
+   {:accessors [] :buffer-views [] :gltf-meshes [] :bin-bytes [] :cursor 0}
+   meshes))
+
+(defn- flatten-node
+  "DFS-flatten one nested `node` ({:name :translation :mesh :children}, all
+  optional except `:children` defaulting to `[]`) into `state`
+  ({:nodes [] :meshes []}), children first (their indices are needed to
+  build the parent's own `:children` array). `:mesh`, if present, is a mesh
+  map (per `layout-meshes`'s input shape) — appended to `state`'s `:meshes`
+  and referenced from the emitted glTF node by that index; a node with no
+  `:mesh` is a pure transform/organizational node (glTF has no separate
+  \"Xform\" type — an empty node IS the equivalent). Returns `[state'
+  node-index]`."
+  [state node]
+  (let [{:keys [name translation mesh children]} node
+        [state mesh-idx] (if mesh
+                            [(update state :meshes conj mesh) (count (:meshes state))]
+                            [state nil])
+        [state child-idxs] (reduce (fn [[state idxs] child]
+                                      (let [[state' idx] (flatten-node state child)]
+                                        [state' (conj idxs idx)]))
+                                    [state []]
+                                    children)
+        gltf-node (cond-> {}
+                    name (assoc :name name)
+                    translation (assoc :translation translation)
+                    mesh-idx (assoc :mesh mesh-idx)
+                    (seq child-idxs) (assoc :children (vec child-idxs)))
+        node-idx (count (:nodes state))]
+    [(update state :nodes conj gltf-node) node-idx]))
+
+(defn build-gltf-scene-json
+  "Build a full multi-node glTF 2.0 JSON scene (as a plain CLJC map) from
+  `roots` (a seq of nested node trees — see `flatten-node`'s docstring for
+  the node shape) + `total-buffer-len`/the pre-laid-out `accessors`/
+  `buffer-views`/`gltf-meshes`/`nodes`/`root-idxs` from
+  `layout-meshes`+`flatten-node`. Call `export-glb-scene-byte-seq` instead
+  of this directly unless you need the JSON map on its own (e.g. for a
+  JSON-only `.gltf`, no BIN chunk)."
+  [{:keys [accessors buffer-views gltf-meshes nodes root-idxs materials total-buffer-len]}]
+  {:asset {:version "2.0" :generator "kami-app-amenominaka"}
+   :scene 0
+   :scenes [{:nodes (vec root-idxs)}]
+   :nodes nodes
+   :meshes gltf-meshes
+   :materials (or materials (default-materials))
+   :accessors accessors
+   :bufferViews buffer-views
+   :buffers [{:byteLength total-buffer-len}]})
+
+(defn export-glb-scene-byte-seq
+  "Pure, portable: `roots` (a seq of nested node trees, see `flatten-node`'s
+  docstring) + optional `:materials` (glTF material JSON maps, defaults to
+  one neutral grey `pbrMetallicRoughness` material, index 0 — every mesh's
+  own `:material` index, if given, indexes into this) -> vector of byte
+  ints (0-255) forming a complete binary glTF 2.0 (.glb) file with the full
+  node hierarchy, mixing real-mesh leaf nodes and pure transform/
+  organizational nodes freely at any depth (unlike `export-glb-byte-seq`,
+  which only ever emits exactly one node/one mesh)."
+  ([roots] (export-glb-scene-byte-seq roots nil))
+  ([roots {:keys [materials]}]
+   (let [[{:keys [nodes meshes]} root-idxs]
+         (reduce (fn [[state idxs] root]
+                    (let [[state' idx] (flatten-node state root)]
+                      [state' (conj idxs idx)]))
+                  [{:nodes [] :meshes []} []]
+                  roots)
+         {:keys [accessors buffer-views gltf-meshes bin-bytes cursor]} (layout-meshes meshes)
+         json-map (build-gltf-scene-json {:accessors accessors :buffer-views buffer-views
+                                          :gltf-meshes gltf-meshes :nodes nodes
+                                          :root-idxs root-idxs :materials materials
+                                          :total-buffer-len cursor})
+         json-bytes (string->byte-seq (->json json-map))]
+     (glb/write-glb-raw json-bytes (vec bin-bytes)))))
+
+(defn export-glb-scene
+  "`export-glb-scene-byte-seq` in the platform's native byte type (`byte[]`
+  on the JVM, `js/Uint8Array` in cljs)."
+  ([roots] (export-glb-scene roots nil))
+  ([roots opts] (bytes-seq->platform (export-glb-scene-byte-seq roots opts))))
+
+;; ---------------------------------------------------------------------------
 ;; Accessor decoding (ADR-0048 §3) — componentType/type -> real typed
 ;; values, not raw buffer bytes
 ;; ---------------------------------------------------------------------------
