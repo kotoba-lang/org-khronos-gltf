@@ -41,7 +41,7 @@
   `TEXCOORD_0`/`JOINTS_0`/`WEIGHTS_0`/indices. See `decode-accessor`'s and
   `parse-gltf`'s own docstrings for the exact shape and v0 limitations
   (sparse accessors, external-file buffer URIs)."
-  (:require [glb]
+  (:require [kotoba.lang.text] [glb]
             [glb.json :as glb-json]))
 
 ;; ---------------------------------------------------------------------------
@@ -117,8 +117,8 @@
 
 (defn json-escape [^String s]
   (-> s
-      (clojure.string/replace "\\" "\\\\")
-      (clojure.string/replace "\"" "\\\"")))
+      (kotoba.lang.text/replace "\\" "\\\\")
+      (kotoba.lang.text/replace "\"" "\\\"")))
 
 (defn ->json
   "Serialize a plain CLJC value (nil/bool/number/string/keyword/map/sequential)
@@ -131,14 +131,14 @@
     (keyword? v) (str "\"" (json-escape (name v)) "\"")
     (string? v) (str "\"" (json-escape v) "\"")
     (map? v) (str "{"
-                   (clojure.string/join ","
+                   (kotoba.lang.text/join ","
                      (map (fn [[k val]]
                             (str "\"" (json-escape (if (keyword? k) (name k) (str k))) "\""
                                  ":" (->json val)))
                           v))
                    "}")
     (number? v) (str v)
-    (sequential? v) (str "[" (clojure.string/join "," (map ->json v)) "]")
+    (sequential? v) (str "[" (kotoba.lang.text/join "," (map ->json v)) "]")
     :else (throw (ex-info "gltf/->json: unsupported value" {:value v}))))
 
 ;; ---------------------------------------------------------------------------
@@ -500,7 +500,7 @@
   padding optional) to a byte-int vector. Only used for JSON-only `.gltf`
   `data:` URI buffers — see `resolve-buffers`."
   [s]
-  (let [clean (clojure.string/replace s #"[^A-Za-z0-9+/]" "")
+  (let [clean (kotoba.lang.text/replace s #"[^A-Za-z0-9+/]" "")
         n (count clean)]
     (loop [i 0 out (transient [])]
       (if (>= i n)
@@ -541,8 +541,8 @@
   (mapv (fn [i {:keys [uri]}]
           (cond
             (and (zero? i) bin) bin
-            (and uri (clojure.string/starts-with? uri "data:"))
-            (let [comma (clojure.string/index-of uri ",")]
+            (and uri (kotoba.lang.text/starts-with? uri "data:"))
+            (let [comma (kotoba.lang.text/index-of uri ",")]
               (base64->byte-seq (subs uri (inc comma))))
             :else nil))
         (range) (:buffers json)))

@@ -1,5 +1,10 @@
 {:paths ["src" "test"]
- :deps {io.github.kotoba-lang/org-khronos-glb {:git/sha "c082d5bd0f46567dd5f74d8d2fff0d48375b0c0b"}}
+ :deps {
+        ;; kotoba.lang.text, not clojure.string. Pinned as an explicit floor:
+        ;; tools.deps takes the NEWEST sha it is shown, so without a floor here
+        ;; this repo silently rides whatever a sibling happens to name.
+        io.github.kotoba-lang/text {:git/sha "73bdb13ae7a3d004b44bca08be03a3191157a38f"}
+       io.github.kotoba-lang/org-khronos-glb {:git/sha "c082d5bd0f46567dd5f74d8d2fff0d48375b0c0b"}}
  :aliases {:test {:extra-paths ["test"]
                   ;; kotoba-lang/mesher is a TEST-ONLY fixture generator (a
                   ;; real, working sdf-to-mesh producer whose output shape
