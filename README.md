@@ -61,5 +61,5 @@ canonical definitions (call-site compatible, no behavior change).
 ## Develop
 
 ```bash
-clojure -M:test
+kbb -M:test
 ```
