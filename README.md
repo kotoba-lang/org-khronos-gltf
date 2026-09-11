@@ -17,7 +17,7 @@ buffer (JSON chunk + BIN chunk), with no external glTF/JSON crate dependency. De
 the crate name suggesting a *loader*, there was no parsing/loading logic in the file —
 this port is faithful to that (there was nothing else to port).
 
-`src/gltf.cljc` ports every function 1:1 as pure CLJC data + functions:
+`src/gltf.cljk` ports every function 1:1 as pure CLJC data + functions:
 
 - `u32->le-bytes` / `le-bytes->u32` / `f32->le-bytes` — little-endian byte codecs
   (the only platform-divergent piece, isolated behind `#?(:clj ... :cljs ...)`)
@@ -47,7 +47,7 @@ canonical definitions (call-site compatible, no behavior change).
 
 ## Tests
 
-`test/gltf_test.cljc` — 7 tests / 17 assertions, 0 failures:
+`test/gltf_test.cljk` — 7 tests / 17 assertions, 0 failures:
 
 - `glb-header-valid` — ported 1:1 from the original's `#[test] fn glb_header_valid`
 - `namespace-loads` — smoke test
